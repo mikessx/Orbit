@@ -19,4 +19,4 @@ class TMDB:
         async with self.client.get(url, headers=self.headers) as response:
             response.raise_for_status()
             data = await response.json()
-            return data["movie_results"][0]["id"]
+            return str(data["movie_results"][0]["id"])

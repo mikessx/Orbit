@@ -2,13 +2,14 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.requests import Request
+from vixsrc import VXSRCScraper
 from dotenv import load_dotenv
 from tmdb import TMDB
-from vixsrc import VXSRCScraper
 
 import os
 import aiohttp
 import logging
+
 
 class Addon:
     def __init__(self):
@@ -36,19 +37,22 @@ class Addon:
         }
 
         self.app = Starlette(debug=True, routes=[
-            Route('/', self.homepage),
+            Route('/', self.health),
             Route('/manifest.json', self.manifest),
             Route('/stream/{type}/{id}.json', self.stream)
         ], on_startup=[self.on_startup])
 
-        self.logger = logging.getLogger("Orbit")
-
-    async def homepage(self, request: Request):
-        return JSONResponse({'hello': 'world'})
-
+        self.logger = logging.getLogger("uvicorn")
 
     def on_startup(self):
         print("Server started: http://127.0.0.1:5000/manifest.json")
+    
+    
+    async def health(self, request: Request):
+        return JSONResponse({
+            "status": "OK",
+            "version": self.addon_manifest['version'] 
+        })
 
 
     async def manifest(self, request: Request):
@@ -66,17 +70,29 @@ class Addon:
         
         self.logger.info(f"Requested stream for {content_id} of type {stream_type}")
         
-        tmdid = await self.tmdb.exchange_for_id(content_id)
-        self.logger.info(f"TMDB ID: {tmdid}")
+        if stream_type == "movie":
+            tmdb_id = await self.tmdb.exchange_for_id(content_id)
+            tokens = await self.vixsrc.extract_token(tmdb_id)
+            m3u8 = await self.vixsrc.get_playlist(tokens)
 
-        tokens = await self.vixsrc.extract_token(tmdid)
-        self.logger.info(f"VIXSRC Tokens: {tokens}")
+        stream = {
+            "url": m3u8,
+            "name": "🚀 | Orbit",
+            "description": f"VX | {tmdb_id}",
+            "behaviorHints": {
+                "notWebReady": True,
+                "proxyHeaders": {
+                    "request": { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0" },
+                    "response": { "Access-Control-Allow-Origin": "*" }
+                }
+            }
+        }
 
-        playlist = await self.vixsrc.get_playlist(tokens, raw=True)
-        self.logger.info(f"VIXSRC Playlist: {playlist}")
-
-        return JSONResponse({"streams": []})
-
+        return JSONResponse({"streams": [stream]}, headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': '*',
+            'Access-Control-Allow-Headers': '*'
+        })
 
 addon = Addon()
 app = addon.app

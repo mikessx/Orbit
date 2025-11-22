@@ -75,7 +75,10 @@ class VXSRCScraper:
             "h": int(hd),
             "lang": lang
         }
-
+        print(playlist_url)
+        if not raw:
+            return f"{playlist_url}?token={token}&expires={expiration}&h={int(hd)}&lang={lang}"
+        
         async with self.client.get(playlist_url, headers = self.headers, params = params) as response:
             response.raise_for_status()
             m3u8 = await response.text()
@@ -86,13 +89,13 @@ class VXSRCScraper:
     
 
 
-import asyncio
-print("Testing...")
-async def main():
-    async with aiohttp.ClientSession() as client:
-        scraper = VXSRCScraper(client)
-        tokens = await scraper.extract_token("7451")
-        m3u8 = await scraper.get_playlist(tokens, raw=True)
-        print(m3u8)
-        
-asyncio.run(main())
+if __name__ == "__main__":
+    import asyncio
+    async def main():
+        async with aiohttp.ClientSession() as client:
+            scraper = VXSRCScraper(client)
+            tokens = await scraper.extract_token("7451")
+            m3u8 = await scraper.get_playlist(tokens)
+            print(m3u8)
+
+    asyncio.run(main())

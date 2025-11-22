@@ -5,7 +5,8 @@ from starlette.requests import Request
 from vixsrc import VXSRCScraper
 from dotenv import load_dotenv
 from tmdb import TMDB
-
+from urllib.parse import unquote
+from profiler import PyInstrumentMiddleware
 import os
 import aiohttp
 import logging
@@ -41,6 +42,9 @@ class Addon:
             Route('/manifest.json', self.manifest),
             Route('/stream/{type}/{id}.json', self.stream)
         ], on_startup=[self.on_startup])
+        
+        if os.getenv('PROFILING_ENABLED', 'false').lower() == 'true':
+            self.app.add_middleware(PyInstrumentMiddleware)
 
         self.logger = logging.getLogger("uvicorn")
 
@@ -70,15 +74,41 @@ class Addon:
         
         self.logger.info(f"Requested stream for {content_id} of type {stream_type}")
         
+        m3u8 = None
+        description = None
+
         if stream_type == "movie":
-            tmdb_id = await self.tmdb.exchange_for_id(content_id)
+            details = await self.tmdb.grab_details(content_id, media_type="movie")
+
+            tmdb_id = details["tmdb_id"]
             tokens = await self.vixsrc.extract_token(tmdb_id)
             m3u8 = await self.vixsrc.get_playlist(tokens)
 
+            description = f"🎥 ❯ {details['title']}\n⭐️ ❯ {details['vote_avg']}\n🌐 ❱ VXSRC"
+
+        elif stream_type == "series":
+            params = unquote(content_id).split(":")
+            content_id = params[0] # tt00000
+            season = params[1]
+            episode = params[2]
+            
+            details = await self.tmdb.grab_details(content_id, media_type="tv")
+            tokens = await self.vixsrc.extract_token(details["tmdb_id"], season, episode)
+            m3u8 = await self.vixsrc.get_playlist(tokens)
+
+            description = f"📺 ❯ {details['title']}\n⭐️ ❯ {details['vote_avg']}\n⌚ ❯ Season: {season} - Episode: {episode}\n🌐 ❱ VXSRC"            
+
+        else:
+            return JSONResponse({"error": "Invalid stream type"}, status_code=400)
+        
+        if m3u8 is None or description is None:
+            self.logger.error(f"Failed to get stream for {content_id} of type {stream_type}. stream: {m3u8}, description: {description}")
+            return JSONResponse({"error": "Failed to get stream"}, status_code=500)
+
         stream = {
             "url": m3u8,
-            "name": "🚀 | Orbit",
-            "description": f"VX | {tmdb_id}",
+            "name": "🔭 | Orbit",
+            "description": description,
             "behaviorHints": {
                 "notWebReady": True,
                 "proxyHeaders": {

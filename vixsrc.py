@@ -16,9 +16,18 @@ class VXSRCScraper:
             "Referer": self.host
         }
 
-    async def extract_token(self, tmdb_id: str) -> dict:
+    async def extract_token(self, tmdb_id: str, season: int = None, episode: int = None) -> dict:
         tmdb_id = tmdb_id.lstrip("tt").strip()
-        async with self.client.get(f"{self.host}/movie/{tmdb_id}/", headers = self.headers) as response:
+
+        url = f"{self.host}/movie/{tmdb_id}/" 
+        if (
+            season is not None and
+            int(season) > 0 and
+            episode is not None and
+            int(episode) > 0
+        ): url = f"{self.host}/tv/{tmdb_id}/{season}/{episode}/"
+
+        async with self.client.get(url, headers = self.headers) as response:
             response.raise_for_status()
             text = await response.text()
 
@@ -75,7 +84,7 @@ class VXSRCScraper:
             "h": int(hd),
             "lang": lang
         }
-        print(playlist_url)
+
         if not raw:
             return f"{playlist_url}?token={token}&expires={expiration}&h={int(hd)}&lang={lang}"
         
@@ -94,7 +103,7 @@ if __name__ == "__main__":
     async def main():
         async with aiohttp.ClientSession() as client:
             scraper = VXSRCScraper(client)
-            tokens = await scraper.extract_token("7451")
+            tokens = await scraper.extract_token("94244", season=2, episode=1)
             m3u8 = await scraper.get_playlist(tokens)
             print(m3u8)
 

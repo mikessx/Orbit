@@ -2,7 +2,7 @@
 .vscode
 
 # profiler
-.profiles
+./profiles
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -126,7 +126,8 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
+#.env
+dev.env
 .venv
 env/
 venv/

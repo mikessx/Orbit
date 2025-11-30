@@ -19,6 +19,7 @@ propcache==0.4.1
 pycares==4.11.0
 pycparser==2.23
 Pygments==2.19.2
+pyinstrument==5.1.1
 python-dotenv==1.2.1
 rich==14.2.0
 sniffio==1.3.1
@@ -27,4 +28,3 @@ starlette==0.50.0
 typing_extensions==4.15.0
 uvicorn==0.38.0
 yarl==1.22.0
-pyinstrument==5.0.0

@@ -1,0 +1,22 @@
+services:
+  orbit:
+    build: .
+    env_file:
+      - ./.env
+      - ./dev.env
+    ports:
+      - "5000:5000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - mediaflow
+    volumes:
+      - ./profiles:/usr/local/orbit/profiles
+  mediaflow:
+    image: 'mhdzumair/mediaflow-proxy:latest'
+    ports:
+      - '8888:8888'
+    env_file:
+      - ./.env
+      - ./dev.env
+

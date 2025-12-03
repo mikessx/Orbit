@@ -85,7 +85,7 @@ class Addon:
         if os.environ.get("SHOW_BANNER", False):
             banner = os.path.join(os.path.dirname(__file__), "assets", "banner.txt")
             with open(banner, "r") as f:
-                print(f.read())
+                self.logger.info(f.read())
 
         if os.environ.get("ENABLE_IP_GET", False):
             async with self.client.get("http://checkip.amazonaws.com/") as response:
@@ -113,11 +113,7 @@ class Addon:
 
 
     async def manifest(self, request: Request):
-        return JSONResponse(self.addon_manifest, headers={
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': '*',
-            'Access-Control-Allow-Headers': '*'
-        })
+        return JSONResponse(self.addon_manifest)
 
 
     async def stream(self, request: Request):
@@ -171,11 +167,7 @@ class Addon:
             }
         }
 
-        return JSONResponse({"streams": [stream]}, headers={
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': '*',
-            'Access-Control-Allow-Headers': '*'
-        })
+        return JSONResponse({"streams": [stream]})
 
 addon = Addon()
 app = addon.app

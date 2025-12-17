@@ -103,8 +103,8 @@ if __name__ == "__main__":
     async def main():
         async with aiohttp.ClientSession() as client:
             scraper = VXSRCScraper(client)
-            tokens = await scraper.extract_token("786892")
-            m3u8 = await scraper.get_playlist(tokens, raw=True)
+            tokens = await scraper.extract_token("1084242")
+            m3u8 = await scraper.get_playlist(tokens, raw=False, hd=False)
             print(m3u8)
 
     asyncio.run(main())

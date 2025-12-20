@@ -38,3 +38,32 @@ async def generate_url(client: aiohttp.ClientSession, mfp_host: str, destination
         data = await response.json()
         return data.get("url")
     
+async def extract_video(mfp_host: str, stream_url: str, provider: str, api_password: str, client: aiohttp.ClientSession):
+    mfp_host = mfp_host.rstrip('/')
+    
+    if provider is None or stream_url is None or api_password is None:
+        return None
+
+    params = {
+        "host": provider,
+        "d": stream_url,
+        "api_password": api_password,
+        #"redirect_stream": redirect_stream
+    }
+
+    async with client.get(f"{mfp_host}/extractor/video", params=params) as response:
+        response.raise_for_status()
+        return await response.json()
+    
+    
+if __name__ == "__main__":
+    import asyncio
+    async def main():
+        async with aiohttp.ClientSession() as client:
+            mfp_host = "http://127.0.0.1:8888"
+            destination = "https://mixdrop.club/e/mkq6rn7vfgzq0g/2/Inception_HD_2010_Bluray_1080p.mp4"
+
+            exctactd = await extract_video(mfp_host, destination, "Mixdrop", "mikesx", client)
+            print(exctactd)
+
+    asyncio.run(main())

@@ -4,15 +4,15 @@ from starlette.routing import Route
 from starlette.requests import Request
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from providers.vixsrc import VXSRCScraper
 from providers.vavoo import VavooScraper
+from providers.cb01 import CB01Scraper
 from utils.profiler import PyInstrumentMiddleware
 from utils.icon_matcher import TVIconMatcher
 from utils.tmdb import TMDB
 from utils.general import get_env_bool
-from utils.mfp import generate_url, check_health
+from utils.mfp import generate_url, check_health, extract_video
 
 from dotenv import load_dotenv
 from urllib.parse import unquote, urlencode
@@ -22,6 +22,7 @@ import os
 import aiohttp
 import logging
 import json
+import asyncio
 
 from rich.pretty import pprint
 
@@ -36,10 +37,12 @@ class Addon:
         self.client = None
         self.tmdb = None
         self.vixsrc = None
-        self.icon_matcher = TVIconMatcher(icon_file=os.path.join(os.path.dirname(__file__), "assets", "icons.txt"), icon_not_available="https://i.postimg.cc/RF6QWqLd/logo.png")
         self.vavoo = None
+        self.cb01 = None
+        self.icon_matcher = TVIconMatcher(icon_file=os.path.join(os.path.dirname(__file__), "assets", "icons.txt"), icon_not_available="https://i.postimg.cc/RF6QWqLd/logo.png")
 
         self.metadata_cache = {}
+        self.channel_cache = {}
 
         self.addon_manifest = {           
             "id": "it.film.orbit",
@@ -111,7 +114,7 @@ class Addon:
             routes = [
                 Route('/', self.health),
                 Route('/manifest.json', self.manifest),
-                Route('/stream/{type}/{id}.json', self.stream),
+                Route('/stream/{type}/{id}.json', self.stream_endpoint),
                 Route('/catalog/{type}/{name}.json', self.catalog),
                 Route('/catalog/{type}/{name}/{extra}.json', self.catalog),
                 Route('/meta/{type}/{id}.json', self.meta)
@@ -131,6 +134,7 @@ class Addon:
         self.tmdb = TMDB(os.getenv('TMDB_READ_API_KEY'), client=self.client)
         self.vixsrc = VXSRCScraper(self.client)
         self.vavoo = VavooScraper(self.client, self.icon_matcher)
+        self.cb01 = CB01Scraper(self.client)
         
         if get_env_bool("SHOW_BANNER"):
             banner = os.path.join(os.path.dirname(__file__), "assets", "banner.txt")
@@ -175,18 +179,13 @@ class Addon:
 
         self.logger.info("Gathering TV Channels...")
         channels = await self.vavoo.getChannels()
-        channels_path = os.path.join(os.path.dirname(__file__), "cache", "channels.json")
+        
+        self.channel_cache = {
+            "last_updated": datetime.now().isoformat(),
+            "channels": {channel["name"]: channel for channel in channels}
+        }
 
-        if not os.path.exists(os.path.dirname(channels_path)):
-            os.makedirs(os.path.dirname(channels_path))
-
-        with open(channels_path, "w") as f:
-            f.write(json.dumps({
-                "channels": channels,
-                "last_updated": datetime.utcnow().isoformat()
-            }, indent=4))
-
-        self.logger.info(f"{len(channels)} TV Channels cached to {channels_path}!")
+        self.logger.info(f"{len(channels)} TV Channels cached!")
 
 
     async def on_shutdown(self):
@@ -204,124 +203,219 @@ class Addon:
     async def manifest(self, request: Request):
         return JSONResponse(self.addon_manifest)
 
-    async def stream(self, request: Request):
+
+    async def stream_endpoint(self, request: Request):
         stream_type = request.path_params['type']
-        content_id = request.path_params['id']
-        
-        self.logger.info(f"Requested stream for {content_id} of type {stream_type}")
-        
-        stream = {
-            "url": None,
-            "name": "🔭 | Orbit",
-            "description": f"📺 ❯ %TITLE%\n⭐️ ❯ %VOTE_AVG%\n🌐 ❱ %SRC%",
-            "behaviorHints": {
-                "notWebReady": True,
-                "proxyHeaders": {
-                        "request": { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0" },
-                        "response": { "Access-Control-Allow-Origin": "*" }
-                    }
-            }
-        }
+        content_id: str = request.path_params['id']
+
+        self.logger.info(f"Requested stream for {content_id} of type {stream_type}.")
+        streams = []
+        episode = None
+        season = None
 
         match stream_type:
-            case "movie":
-                details = await self.tmdb.grab_details(content_id, media_type="movie")
-                tokens = await self.vixsrc.extract_token(details["tmdb_id"])
-                m3u8 = await self.vixsrc.get_playlist(tokens)
+            case "tv":
+                if content_id.startswith("orbit-tv:"):
+                    channel_name = unquote(content_id.removeprefix("orbit-tv:")).replace("_", " ")
+                    vavoo_streams = await self.get_streams_tv(channel_name)
+                    streams.extend(vavoo_streams)
+                return JSONResponse({"streams": streams})
 
-                stream["url"] = m3u8
-                stream["description"] = stream["description"].replace("%TITLE%", details['title']).replace("%VOTE_AVG%", str(details['vote_avg'])).replace("%SRC%", "VXSRC")
-                stream["behaviorHints"]["proxyHeaders"]["request"]["Referer"] = self.vixsrc.host
-            
             case "series":
                 params = unquote(content_id).split(":")
                 content_id = params[0] # tt00000
                 season = params[1]
                 episode = params[2]
 
-                details = await self.tmdb.grab_details(content_id, media_type="tv")
-                tokens = await self.vixsrc.extract_token(details["tmdb_id"], season, episode)
-                m3u8 = await self.vixsrc.get_playlist(tokens)
-
-                stream["url"] = m3u8
-                stream["description"] = stream["description"].replace("%TITLE%", details['title']).replace("%VOTE_AVG%", str(details['vote_avg'])).replace("%SRC%", "VXSRC")
-                stream["description"] += f"\n⌚ ❯ Season: {season} - Episode: {episode}"
-                stream["behaviorHints"]["proxyHeaders"]["request"]["Referer"] = self.vixsrc.host
-            
-            case "tv" if content_id.startswith("orbit-tv:"):
-                channel_name = unquote(content_id.split("orbit-tv:")[1]).replace("_", " ")
-
-                with open(os.path.join(os.path.dirname(__file__), "cache", "channels.json"), "r") as f:
-                    channels = json.load(f).get("channels", [])
-                channel = next(
-                    (ch for ch in channels if ch["name"] == channel_name), 
-                    None
-                )
-
-                if channel is not None:
-                    url = channel["url"]
-                    m3u8 = await self.vavoo.get_stream(url)
-                    stream["url"] = m3u8
-                    stream["description"] = f"📺 ❯ {channel_name}\n🌐 ❱ VAVOO"
-                    stream["behaviorHints"]["proxyHeaders"]["request"]["Referer"] = "https://vavoo.to/"
-
-        self.logger.info(f"Providing stream URL: {stream['url']}")
+        details = await self.tmdb.grab_details(content_id, media_type="tv" if stream_type == "series" else "movie")
         
-        proxied_stream = None
-        if get_env_bool("MFP_ENABLED", False) and stream["url"] is not None:
+        tasks = [
+            asyncio.create_task(self.get_streams_vixsrc(details, media_type=stream_type, season=season, episode=episode)),
+            asyncio.create_task(self.get_streams_cb01(details, media_type=stream_type, season=season, episode=episode))
+        ]
+        
+        done, pending = await asyncio.wait(tasks, timeout=2.0)
+        
+        for task in pending:
+            self.logger.warning(f"Task timed out: {task}")
+            task.cancel()
+        
+        for task in done:
             try:
-                mfp_host, mfp_port = os.getenv("MFP_HOST", "127.0.0.1:8888").split(":")
-            except ValueError:
-                mfp_host = os.getenv("MFP_HOST")
-                if not await check_health(self.client, mfp_host):
-                    self.logger.error("MFP_HOST is not set correctly!")
-                    return JSONResponse({"error": "MFP_HOST is not set correctly!"}, status_code=500)
-            else:
-                mfp_host = f"http://{mfp_host}:{mfp_port}"
+                result = task.result()
+                if result:
+                    streams.extend(result)
+            except Exception as e:
+                self.logger.error(f"Task failed: {e}")
 
-            self.logger.info("Generating MFP proxied URL...")
-            proxied_url = await generate_url(
-                client = self.client,
-                mfp_host= mfp_host,
-                destination = stream["url"],
-                request_headers = stream["behaviorHints"]["proxyHeaders"]["request"],
-                response_headers = stream["behaviorHints"]["proxyHeaders"]["response"],
-                api_password = os.getenv("API_PASSWORD", ""),
-                referer = stream["behaviorHints"]["proxyHeaders"]["request"].get("Referer", "")
-            )
+        return JSONResponse({"streams": streams})
+
+
+    async def get_streams_vixsrc(self, details, media_type: str = "movie", season: int = None, episode: int = None, use_mfp: bool = True) -> list[dict]:
+        if media_type == "tv" and (season is None or episode is None):
+            raise ValueError("Season and episode must be provided for TV shows")
         
-            self.logger.info(f"Generated proxied URL: {proxied_url}")
+        tokens = await self.vixsrc.extract_token(details["tmdb_id"], season, episode)
+        m3u8 = await self.vixsrc.get_playlist(tokens)
 
-            proxied_stream = stream.copy()
-            proxied_stream["url"] = proxied_url
-            proxied_stream.pop("behaviorHints", None)
-            proxied_stream["description"] += "\n🔗 ❯ Proxied via MFP"
+        streams = [
+            {
+                "url": m3u8,
+                "name": "🪐 | Orbit",
+                "description": f"🎬 ❯ {details["title"]}\n⭐️ ❯ {details["vote_avg"]}\n🌐 ❱ VIXSRC",
+                "behaviorHints": {
+                    "notWebReady": True,
+                    "proxyHeaders": {
+                        "request": { 
+                            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0", 
+                            "Referer": self.vixsrc.host 
+                        },
+                        "response": { "Access-Control-Allow-Origin": "*" }
+                    }
+                }
+            }
+        ]
 
-            print("Streams:")
-            pprint([stream, proxied_stream], expand_all=True)
-        return JSONResponse({"streams": [stream, proxied_stream] if proxied_stream else [stream]})
+        if use_mfp:
+            mfp = self.get_mfp()
+            if not mfp: 
+                return streams
+            
+            request_headers = None 
+            response_headers = None
+        
+            if "behaviorHints" in streams[0]:
+                request_headers = streams[0]["behaviorHints"]["proxyHeaders"]["request"]
+                response_headers = streams[0]["behaviorHints"]["proxyHeaders"]["response"]
+                refer = request_headers["Referer"]
 
+            proxied_m3u8 = await generate_url(
+                client = self.client,
+                mfp_host= mfp,
+                destination = m3u8,
+                request_headers = request_headers,
+                response_headers = response_headers,
+                api_password = os.getenv("API_PASSWORD", ""),
+                referer = refer
+            )
+            if proxied_m3u8:
+                streams.append({
+                    "url": proxied_m3u8,
+                    "name": "🪐 | Orbit",
+                    "description": f"🎬 ❯ {details["title"]}\n⭐️ ❯ {details["vote_avg"]}\n🌐 ❱ VIXSRC\n🔗 ❯ Proxied via MFP"
+                })
+        return streams
+
+
+    async def get_streams_cb01(self, details, media_type: str = "movie", season: int = None, episode: int = None) -> dict:
+        if media_type == "tv" and (season is None or episode is None):
+            raise ValueError("Season and episode must be provided for TV shows")
+        if media_type == "tv":
+            self.logger.warning("CB01 Serie non implementato.")
+            return
+
+        release_date = details["release_date"][:4]
+        mixdrop = await self.cb01.search_movies(details["title"], release_date)
+        
+        try:
+            extracted = await extract_video(
+                mfp_host = self.get_mfp(),
+                stream_url = mixdrop,
+                provider = "Mixdrop",
+                api_password = os.getenv("API_PASSWORD", ""),
+                client = self.client
+            )
+        except aiohttp.ClientResponseError:
+            self.logger.error("Exeception raised remotly and failed to extract video from Mixdrop.")
+            return
+
+        if not extracted:
+            self.logger.error("Failed to extract video from Mixdrop.")
+            return
+
+        m3u8 = extracted.get("destination_url")
+        proxied_url = await generate_url(
+            client = self.client,
+            mfp_host= self.get_mfp(),
+            destination = m3u8,
+            request_headers = extracted.get("request_headers"),
+            api_password = os.getenv("API_PASSWORD", ""),
+            endpoint = extracted.get("mediaflow_proxy_url")
+        )
+
+        streams = [
+            {
+                "url": proxied_url,
+                "name": "🪐 | Orbit",
+                "description": f"🎬 ❯ {details["title"]}\n⭐️ ❯ {details["vote_avg"]}\n🌐 ❱ CB01 + MFP",
+            }
+        ]
+        return streams
+
+
+    async def get_streams_tv(self, channel_name: str, use_mfp: bool = True):
+        channel = self.__get_channel(channel_name)
+        if channel is None:
+            return None
+        
+        streams = []
+        m3u8 = await self.vavoo.get_stream(channel["url"])
+
+        streams.append({
+            "url": m3u8,
+            "name": "🪐 | Orbit",
+            "description": f"📺 ❯ {channel['name']}\n🌐 ❱ VAVOO",
+            "behaviorHints": {
+                "notWebReady": True,
+                "proxyHeaders": {
+                    "request": {
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0",
+                        "Referer": "https://vavoo.to/"
+                    },
+                    "response": { "Access-Control-Allow-Origin": "*" }
+                }
+            }
+        })
+
+        if use_mfp:
+            mfp = self.get_mfp()
+            if not mfp:
+                return streams
+
+            proxied_m3u8 = await generate_url(
+                client = self.client,
+                mfp_host= mfp,
+                destination = m3u8,
+                api_password = os.getenv("API_PASSWORD", ""),
+            )
+            if proxied_m3u8:
+                streams.append({
+                    "url": proxied_m3u8,
+                    "name": "🪐 | Orbit",
+                    "description": f"📺 ❯ {channel['name']}\n🌐 ❱ VAVOO\n🔗 ❱ Proxied via MFP"
+                })
+        return streams
+    
 
     async def catalog(self, request: Request):
         catalog_type = request.path_params['type']
         catalog_name = request.path_params['name']
         
         extra = request.path_params.get('extra', None)
+        genre = None
         if extra and extra.startswith("genre="):
             genre = unquote(extra).split("=")[1]
         
         self.logger.info(f"Requested catalog for {catalog_name} of type {catalog_type} with genre {genre if extra else 'N/A'}")
 
         if catalog_type == "tv" and catalog_name == "orbit-tv":
-            with open(os.path.join(os.path.dirname(__file__), "cache", "channels.json"), "r") as f:
-                data = json.load(f)
-                channels = data.get("channels", [])
-
             metaitems = []
-            for channel in channels:
+
+            for channel_name, channel in self.channel_cache.get("channels", {}).items():
                 if extra and genre != "Tutti":
                     if "genres" not in channel or genre not in channel["genres"]:
                         continue
+
                 metaitems.append({
                     "id": "orbit-tv:" + channel["name"].replace(" ", "_"),
                     "type": "tv",
@@ -332,8 +426,25 @@ class Addon:
                     "description": f"📺 ❯ {channel['name']}",
                     "genres": channel.get("genres", ["Tutti"])
                 })
+
                 self.metadata_cache["orbit-tv:" + channel["name"].replace(" ", "_")] = metaitems[-1]
             return JSONResponse({"metas": metaitems})
+
+
+    def get_mfp(self):
+        if not get_env_bool("MFP_ENABLED", False):
+            return None
+        
+        try:
+            mfp_host, mfp_port = os.getenv("MFP_HOST", "127.0.0.1:8888").split(":")
+        except ValueError:
+            mfp_host = os.getenv("MFP_HOST")
+            if not check_health(self.client, mfp_host):
+                self.logger.error("MFP_HOST is not set correctly!")
+                return None
+        else:
+            mfp_host = f"http://{mfp_host}:{mfp_port}"
+        return mfp_host
 
 
     async def meta(self, request: Request):
@@ -349,12 +460,7 @@ class Addon:
             self.logger.warning(f"Metadata for {content_id} not found in cache, regenerating...")
             channel_name = content_id.split("orbit-tv:")[1].replace("_", " ")
 
-            with open(os.path.join(os.path.dirname(__file__), "cache", "channels.json"), "r") as f:
-                channels = json.load(f).get("channels", [])
-            channel = next(
-                (ch for ch in channels if ch["name"] == channel_name), 
-                None
-            )
+            channel = self.__get_channel(channel_name)
 
             if channel is not None:
                 metaitem = {
@@ -368,6 +474,15 @@ class Addon:
                     "genres": channel.get("genres", ["Tutti"])
                 }
                 return JSONResponse({"meta": metaitem})
+        
+        if meta_type == "movie":
+            return JSONResponse({"meta": None})
+        if meta_type == "series":
+            return JSONResponse({"meta": None})
+
+    def __get_channel(self, channel_name: str) -> dict | None:
+        return self.channel_cache.get("channels", {}).get(channel_name, None)
+
 
 if __name__ == "__main__":
     import uvicorn

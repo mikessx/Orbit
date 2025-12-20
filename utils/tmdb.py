@@ -37,6 +37,7 @@ class TMDB:
                     "tmdb_id": str(data["id"]),
                     "title": data["title"],
                     "vote_avg": round(data["vote_average"], 1),
+                    "release_date": data["release_date"]
                 }
             elif len(data["tv_results"]) >= 1 and media_type == "tv":
                 data = data["tv_results"][0]
@@ -44,4 +45,5 @@ class TMDB:
                     "tmdb_id": str(data["id"]),
                     "title": data["name"],
                     "vote_avg": round(data["vote_average"], 1),
+                    "release_date": data["first_air_date"]
                 }

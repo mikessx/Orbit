@@ -415,6 +415,8 @@ class VavooScraper:
                     
                         item.pop("ids", None)
                         item.pop("group", None)
+                        item.pop("logo", None)
+                        item.pop("type", None)
 
                         possible_icon = self.icon_matcher.match_icon(name, return_logo_url=True)
                         item["icon"] = possible_icon

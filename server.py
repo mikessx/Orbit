@@ -29,10 +29,14 @@ from rich.pretty import pprint
 class Addon:
     def __init__(self):
         dev_env_path = os.path.join(os.path.dirname(__file__), "dev.env")
-        if os.path.exists(dev_env_path):
-            load_dotenv(dotenv_path=dev_env_path)
-        else:
-            load_dotenv()
+        try:
+            if os.path.exists(dev_env_path):
+                load_dotenv(dotenv_path=dev_env_path)
+            else:
+                load_dotenv()
+        except Exception as e:
+            print(f"Error loading environment variables: {e}.")
+            print(f"File dev.env exist at {dev_env_path} ?: {os.path.exists(dev_env_path)}")
 
         self.client = None
         self.tmdb = None

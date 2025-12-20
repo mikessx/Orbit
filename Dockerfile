@@ -1,12 +1,12 @@
 FROM python:3.14-slim
 WORKDIR /usr/local/orbit
 
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
 RUN useradd orbit
 RUN usermod -a -G 1000 orbit
 USER orbit
-
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

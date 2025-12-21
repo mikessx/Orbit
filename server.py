@@ -13,6 +13,7 @@ from utils.icon_matcher import TVIconMatcher
 from utils.tmdb import TMDB
 from utils.general import get_env_bool
 from utils.mfp import generate_url, check_health, extract_video
+from utils.webshare import Webshare
 
 from dotenv import load_dotenv
 from urllib.parse import unquote, urlencode
@@ -21,8 +22,8 @@ from datetime import datetime
 import os
 import aiohttp
 import logging
-import json
 import asyncio
+import random
 
 from rich.pretty import pprint
 
@@ -40,13 +41,16 @@ class Addon:
 
         self.client = None
         self.tmdb = None
+        self.webshare = None
         self.vixsrc = None
         self.vavoo = None
         self.cb01 = None
         self.icon_matcher = TVIconMatcher(icon_file=os.path.join(os.path.dirname(__file__), "assets", "icons.txt"), icon_not_available="https://i.postimg.cc/RF6QWqLd/logo.png")
 
+
         self.metadata_cache = {}
         self.channel_cache = {}
+        self.proxylist = None
 
         self.addon_manifest = {           
             "id": "it.film.orbit",
@@ -181,6 +185,21 @@ class Addon:
                 await self.client.close()
                 exit(1)
 
+
+        if os.getenv("WEBSHARE_APIKEY"):
+            self.logger.info("Webshare API key found, enabling proxy support...")
+            self.webshare = Webshare(os.getenv("WEBSHARE_APIKEY"), self.client)
+            
+            for ntf in await self.webshare.get_message_associated(await self.webshare.get_notifications()):
+                if ntf["stop"] == True:
+                    self.logger.error("Webshare Notification: " + ntf["message"])
+                else:
+                    self.logger.warning("Webshare Notification: " + ntf["message"])
+
+            self.proxylist = await self.webshare.get_proxy_list()
+            self.logger.info(f"Got {self.proxylist["count"]} proxies.")
+            self.proxylist = self.proxylist["results"]
+
         self.logger.info("Gathering TV Channels...")
         channels = await self.vavoo.getChannels()
         
@@ -217,11 +236,17 @@ class Addon:
         episode = None
         season = None
 
+        if self.webshare:
+            proxy = self.__get_proxy()
+            self.logger.info(f"Using proxy: {proxy}")
+        else:
+            proxy = None
+
         match stream_type:
             case "tv":
                 if content_id.startswith("orbit-tv:"):
                     channel_name = unquote(content_id.removeprefix("orbit-tv:")).replace("_", " ")
-                    vavoo_streams = await self.get_streams_tv(channel_name)
+                    vavoo_streams = await self.get_streams_tv(channel_name, proxy=proxy)
                     streams.extend(vavoo_streams)
                 return JSONResponse({"streams": streams})
 
@@ -234,8 +259,8 @@ class Addon:
         details = await self.tmdb.grab_details(content_id, media_type="tv" if stream_type == "series" else "movie")
         
         tasks = [
-            asyncio.create_task(self.get_streams_vixsrc(details, media_type=stream_type, season=season, episode=episode)),
-            asyncio.create_task(self.get_streams_cb01(details, media_type=stream_type, season=season, episode=episode))
+            asyncio.create_task(self.get_streams_vixsrc(details, media_type=stream_type, season=season, episode=episode, proxy=proxy)),
+            asyncio.create_task(self.get_streams_cb01(details, media_type=stream_type, season=season, episode=episode, proxy=proxy))
         ]
         
         done, pending = await asyncio.wait(tasks, timeout=2.0)
@@ -255,12 +280,12 @@ class Addon:
         return JSONResponse({"streams": streams})
 
 
-    async def get_streams_vixsrc(self, details, media_type: str = "movie", season: int = None, episode: int = None, use_mfp: bool = True) -> list[dict]:
+    async def get_streams_vixsrc(self, details, media_type: str = "movie", season: int = None, episode: int = None, use_mfp: bool = True, proxy = None) -> list[dict]:
         if media_type == "tv" and (season is None or episode is None):
             raise ValueError("Season and episode must be provided for TV shows")
         
-        tokens = await self.vixsrc.extract_token(details["tmdb_id"], season, episode)
-        m3u8 = await self.vixsrc.get_playlist(tokens)
+        tokens = await self.vixsrc.extract_token(details["tmdb_id"], season, episode, proxy=proxy)
+        m3u8 = await self.vixsrc.get_playlist(tokens, proxy=proxy)
 
         streams = [
             {
@@ -281,7 +306,7 @@ class Addon:
         ]
 
         if use_mfp:
-            mfp = self.get_mfp()
+            mfp = self.__get_mfp()
             if not mfp: 
                 return streams
             
@@ -311,7 +336,7 @@ class Addon:
         return streams
 
 
-    async def get_streams_cb01(self, details, media_type: str = "movie", season: int = None, episode: int = None) -> dict:
+    async def get_streams_cb01(self, details, media_type: str = "movie", season: int = None, episode: int = None, proxy = None) -> dict:
         if media_type == "tv" and (season is None or episode is None):
             raise ValueError("Season and episode must be provided for TV shows")
         if media_type == "tv":
@@ -319,11 +344,11 @@ class Addon:
             return
 
         release_date = details["release_date"][:4]
-        mixdrop = await self.cb01.search_movies(details["title"], release_date)
+        mixdrop = await self.cb01.search_movies(details["title"], release_date, proxy=proxy)
         
         try:
             extracted = await extract_video(
-                mfp_host = self.get_mfp(),
+                mfp_host = self.__get_mfp(),
                 stream_url = mixdrop,
                 provider = "Mixdrop",
                 api_password = os.getenv("API_PASSWORD", ""),
@@ -340,7 +365,7 @@ class Addon:
         m3u8 = extracted.get("destination_url")
         proxied_url = await generate_url(
             client = self.client,
-            mfp_host= self.get_mfp(),
+            mfp_host= self.__get_mfp(),
             destination = m3u8,
             request_headers = extracted.get("request_headers"),
             api_password = os.getenv("API_PASSWORD", ""),
@@ -357,13 +382,13 @@ class Addon:
         return streams
 
 
-    async def get_streams_tv(self, channel_name: str, use_mfp: bool = True):
+    async def get_streams_tv(self, channel_name: str, use_mfp: bool = True, proxy = None):
         channel = self.__get_channel(channel_name)
         if channel is None:
             return None
         
         streams = []
-        m3u8 = await self.vavoo.get_stream(channel["url"])
+        m3u8 = await self.vavoo.get_stream(channel["url"], proxy=proxy)
 
         streams.append({
             "url": m3u8,
@@ -382,7 +407,7 @@ class Addon:
         })
 
         if use_mfp:
-            mfp = self.get_mfp()
+            mfp = self.__get_mfp()
             if not mfp:
                 return streams
 
@@ -435,22 +460,6 @@ class Addon:
             return JSONResponse({"metas": metaitems})
 
 
-    def get_mfp(self):
-        if not get_env_bool("MFP_ENABLED", False):
-            return None
-        
-        try:
-            mfp_host, mfp_port = os.getenv("MFP_HOST", "127.0.0.1:8888").split(":")
-        except ValueError:
-            mfp_host = os.getenv("MFP_HOST")
-            if not check_health(self.client, mfp_host):
-                self.logger.error("MFP_HOST is not set correctly!")
-                return None
-        else:
-            mfp_host = f"http://{mfp_host}:{mfp_port}"
-        return mfp_host
-
-
     async def meta(self, request: Request):
         meta_type = request.path_params['type']
         content_id = unquote(request.path_params['id'])
@@ -484,8 +493,32 @@ class Addon:
         if meta_type == "series":
             return JSONResponse({"meta": None})
 
+
     def __get_channel(self, channel_name: str) -> dict | None:
         return self.channel_cache.get("channels", {}).get(channel_name, None)
+
+
+    def __get_mfp(self):
+        if not get_env_bool("MFP_ENABLED", False):
+            return None
+        
+        try:
+            mfp_host, mfp_port = os.getenv("MFP_HOST", "127.0.0.1:8888").split(":")
+        except ValueError:
+            mfp_host = os.getenv("MFP_HOST")
+            if not check_health(self.client, mfp_host):
+                self.logger.error("MFP_HOST is not set correctly!")
+                return None
+        else:
+            mfp_host = f"http://{mfp_host}:{mfp_port}"
+        return mfp_host
+
+
+    def __get_proxy(self):
+        if self.webshare is None:
+            return None
+        proxy = random.choice(self.proxylist)
+        return proxy
 
 
 if __name__ == "__main__":

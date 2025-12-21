@@ -30,7 +30,7 @@ class CB01Scraper:
 
         return first
 
-    async def _resolve_to_mixdrop(self, raw: str, page_html: str) -> str | None:
+    async def _resolve_to_mixdrop(self, raw: str, page_html: str, proxy: str = None) -> str | None:
         link = raw.strip()
 
         # stayonline bypass
@@ -51,7 +51,7 @@ class CB01Scraper:
                     'Referer': 'https://stayonline.pro/'
                 }
 
-                async with self.client.post('https://stayonline.pro/ajax/linkEmbedView.php', data=data, headers=headers) as res:
+                async with self.client.post('https://stayonline.pro/ajax/linkEmbedView.php', data=data, headers=headers, proxy=proxy) as res:
                     if res.ok:
                         js = await res.json()
                         v = js.get('data', {}).get('value')
@@ -69,7 +69,7 @@ class CB01Scraper:
                     try:
                         embed_url = link if re.search(r'/e/|/v/', link, re.IGNORECASE) else f'https://stayonline.pro/e/{content_id}/'
                         headers = {'User-Agent': self.headers['User-Agent'], 'Referer': 'https://stayonline.pro/'}
-                        async with self.client.get(embed_url, headers=headers) as pg:
+                        async with self.client.get(embed_url, headers=headers, proxy=proxy) as pg:
                             if pg.ok:
                                 txt = await pg.text()
                                 mm = re.search(r'https?://[^"\'<>]*mixdrop[^"\'<>]*', txt, re.IGNORECASE)
@@ -85,7 +85,7 @@ class CB01Scraper:
 
         return link
 
-    async def stayonline_get_meta(self, url: str) -> tuple[str, str]:
+    async def stayonline_get_meta(self, url: str, proxy: str = None) -> tuple[str, str]:
         url = url if not url.endswith("/") else url[:-1]
         content_id = url.split("/")[-1] # altra soluzione è trovare lelemento "e" e fare idx +1 ma per ora va bene così.
         stayonline_url = f"https://stayonline.pro/l/${content_id}/"
@@ -93,7 +93,7 @@ class CB01Scraper:
         headers = self.headers.copy()
         headers.update({"Referer": "https://stayonline.pro/"})
 
-        async with self.client.get(stayonline_url, headers=headers) as response:
+        async with self.client.get(stayonline_url, headers=headers, proxy=proxy) as response:
             response.raise_for_status()
             html = await response.text()
 
@@ -113,10 +113,10 @@ class CB01Scraper:
         except Exception:
             return None
 
-    async def search_movies(self, query: str, film_year: str):
+    async def search_movies(self, query: str, film_year: str, proxy: str = None):
         url = f"{self.base_url}/?s={quote_plus(query)}"
 
-        async with self.client.get(url, headers=self.headers) as response:
+        async with self.client.get(url, headers=self.headers, proxy=proxy) as response:
             response.raise_for_status()
             html = await response.text()
 
@@ -124,7 +124,7 @@ class CB01Scraper:
         if not best_match:
             return None
 
-        async with self.client.get(best_match, headers=self.headers) as response:
+        async with self.client.get(best_match, headers=self.headers, proxy=proxy) as response:
             response.raise_for_status()
             movie_page = await response.text()
 
@@ -144,7 +144,7 @@ class CB01Scraper:
         #    filename, file_size = None, None
             
         print("Resolving to Mixdrop...")
-        mixdrop = await self._resolve_to_mixdrop(candidate, movie_page)
+        mixdrop = await self._resolve_to_mixdrop(candidate, movie_page, proxy)
         print(mixdrop)
         return mixdrop #(mixdrop, filename, file_size)
 

@@ -16,7 +16,7 @@ class VXSRCScraper:
             "Referer": self.host
         }
 
-    async def extract_token(self, tmdb_id: str, season: int = None, episode: int = None) -> dict:
+    async def extract_token(self, tmdb_id: str, season: int = None, episode: int = None, proxy: str = None) -> dict:
         tmdb_id = tmdb_id.lstrip("tt").strip()
 
         url = f"{self.host}/movie/{tmdb_id}/" 
@@ -27,7 +27,7 @@ class VXSRCScraper:
             int(episode) > 0
         ): url = f"{self.host}/tv/{tmdb_id}/{season}/{episode}/"
 
-        async with self.client.get(url, headers = self.headers) as response:
+        async with self.client.get(url, headers = self.headers, proxy=proxy) as response:
             response.raise_for_status()
             text = await response.text()
 
@@ -72,7 +72,7 @@ class VXSRCScraper:
             "movie_id": tmdb_id
         }
     
-    async def get_playlist(self, tokens: dict[str] = None, token: str = None, expiration: str = None, playlist_url: str = None, hd: bool = True, lang: str = "it", raw: bool = False):
+    async def get_playlist(self, tokens: dict[str] = None, token: str = None, expiration: str = None, playlist_url: str = None, hd: bool = True, lang: str = "it", raw: bool = False, proxy: str = None):
         if tokens is not None:
             token = tokens["token"]
             expiration = tokens["expiration"]
@@ -88,7 +88,7 @@ class VXSRCScraper:
         if not raw:
             return f"{playlist_url}?token={token}&expires={expiration}&h={int(hd)}&lang={lang}"
         
-        async with self.client.get(playlist_url, headers = self.headers, params = params) as response:
+        async with self.client.get(playlist_url, headers = self.headers, params = params, proxy=proxy) as response:
             response.raise_for_status()
             m3u8 = await response.text()
 
@@ -101,10 +101,11 @@ class VXSRCScraper:
 if __name__ == "__main__":
     import asyncio
     async def main():
+        proxy = "http://mcxbepdg:isn3u0ba8wx4@142.111.48.253:7030"
         async with aiohttp.ClientSession() as client:
             scraper = VXSRCScraper(client)
-            tokens = await scraper.extract_token("1084242")
-            m3u8 = await scraper.get_playlist(tokens, raw=False, hd=False)
+            tokens = await scraper.extract_token("1084242", proxy=proxy)
+            m3u8 = await scraper.get_playlist(tokens, raw=False, hd=False, proxy=proxy)
             print(m3u8)
 
     asyncio.run(main())

@@ -292,7 +292,7 @@ class VavooScraper:
         self.client = client
         self.icon_matcher = matcher
     
-    async def getSignature(self) -> str:
+    async def getSignature(self, proxy = None) -> str:
         """Funzione che replica esattamente quella dell'addon utils.py"""
         headers = {
             "user-agent": "okhttp/4.11.0",
@@ -360,7 +360,7 @@ class VavooScraper:
         }
 
         try:
-            async with self.client.post("https://www.vavoo.tv/api/app/ping", json=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10), expect100=False) as resp:
+            async with self.client.post("https://www.vavoo.tv/api/app/ping", json=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10), expect100=False, proxy=proxy) as resp:
                 resp.raise_for_status()
                 json_data = await resp.json()
                 return json_data.get("addonSig")
@@ -369,8 +369,8 @@ class VavooScraper:
             return None
     
 
-    async def getChannels(self, groups: list[str] = ["Italy"]) -> list[dict]:
-        signature = await self.getSignature()
+    async def getChannels(self, groups: list[str] = ["Italy"], proxy = None) -> list[dict]:
+        signature = await self.getSignature(proxy=proxy)
         if signature is None or signature == "":
             print("Signature non valida")
             return None
@@ -400,7 +400,7 @@ class VavooScraper:
                     "cursor": cursor,
                     "clientVersion": "3.0.2"
                 }
-                async with self.client.post(f"https://{VAVOO_DOMAIN}/mediahubmx-catalog.json", json=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10), expect100=False) as response:
+                async with self.client.post(f"https://{VAVOO_DOMAIN}/mediahubmx-catalog.json", json=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10), expect100=False, proxy=proxy) as response:
                     response.raise_for_status()
                     payload = await response.json()
 
@@ -430,8 +430,8 @@ class VavooScraper:
                         break
         return saved
 
-    async def get_stream(self, channel_link: str, return_details: bool = False) -> dict | str:
-        signature = await self.getSignature()
+    async def get_stream(self, channel_link: str, return_details: bool = False, proxy = None) -> dict | str:
+        signature = await self.getSignature(proxy=proxy)
         if signature is None or signature == "":
             print("Signature non valida")
             return None
@@ -450,7 +450,7 @@ class VavooScraper:
             "clientVersion": "3.0.2"
         }
 
-        async with self.client.post(f"https://{VAVOO_DOMAIN}/mediahubmx-resolve.json", json=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10), expect100=False) as response:
+        async with self.client.post(f"https://{VAVOO_DOMAIN}/mediahubmx-resolve.json", json=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10), expect100=False, proxy=proxy) as response:
             response.raise_for_status()
             payload = await response.json()
             
